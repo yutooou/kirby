@@ -1,5 +1,11 @@
 package models
 
+type EngineType int8
+
+const (
+	HTTP EngineType = iota
+)
+
 type (
 	// control point static infomation
 	Info struct {
@@ -11,5 +17,7 @@ type (
 		Version string
 		// description
 		Desc string
+		// engine type
+		EngineType EngineType
 	}
 )
