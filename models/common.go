@@ -7,3 +7,10 @@ type (
 		Info Info
 	}
 )
+
+type (
+	MessageChan struct {
+		kch chan KirbyModel
+		Ech chan error
+	}
+)

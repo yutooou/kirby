@@ -1,3 +1,13 @@
 engine:
   http:
     addr: ':8080'
+
+sentinel:
+  file:
+    enable: true
+    dir: '/Users/mawentao/software/kirby-conf'
+  openapi:
+    enable: false
+    addr:
+      service1: 'http://127.0.0.1:9090/swagger.json'
+      service2: 'http://127.0.0.1:9091/swagger.json'

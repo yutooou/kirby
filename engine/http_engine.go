@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	rootPath = "/_kirby"
 	infoPath = "/_info"
 )
 
-var LocalHttpEngine *HttpEngine
+var (
+	LocalHttpEngine *HttpEngine
+)
 
 type HttpEngine struct {
 	addr string
@@ -91,14 +92,7 @@ func buildHandler(model models.KirbyModel, r *gin.Engine) {
 }
 
 func showKirbyInfo() gin.HandlerFunc {
-	info := models.Info{
-		Name:       "Kirby",
-		Code:       rootPath,
-		Version:    "0.0.1",
-		Desc:       "Kirby, data simulation engine.",
-		EngineType: models.HTTP,
-	}
-	return showInfo(info)
+	return showInfo(models.KirbyInfo)
 }
 
 func showInfo(info models.Info) gin.HandlerFunc {
@@ -110,6 +104,9 @@ func showInfo(info models.Info) gin.HandlerFunc {
 func initHandler() *gin.Engine {
 	gin.SetMode(gin.DebugMode)
 	r := gin.Default()
-	r.GET(path.Join(rootPath, infoPath), showKirbyInfo())
+	r.Use(func(c *gin.Context) {
+		c.Header(models.KirbyInfo.Name, models.KirbyInfo.Version)
+	})
+	r.GET(path.Join(models.KirbyInfo.Code, infoPath), showKirbyInfo())
 	return r
 }

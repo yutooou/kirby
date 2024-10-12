@@ -6,6 +6,16 @@ const (
 	HTTP EngineType = iota
 )
 
+var (
+	KirbyInfo Info = Info{
+		Name:       "Kirby",
+		Code:       "_kirby",
+		Version:    "v0.0.1",
+		Desc:       "Kirby, data simulation engine.",
+		EngineType: HTTP,
+	}
+)
+
 type (
 	// control point static infomation
 	Info struct {
