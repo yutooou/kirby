@@ -4,29 +4,48 @@ import (
 	"fmt"
 	"github.com/fsnotify/fsnotify"
 	"github.com/yutooou/kirby/models"
+	"github.com/yutooou/kirby/utils"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 type FileSystemSentinel struct {
 	path               string
 	allKirbyFile       map[string]KirbyFile
-	acceptFileProtocol []string
-}
-
-func NewFileSystemSentinel(path string) FileSystemSentinel {
-	return FileSystemSentinel{
-		path:               path,
-		allKirbyFile:       make(map[string]KirbyFile),
-		acceptFileProtocol: []string{".json", ".kbl"},
-	}
+	acceptFileProtocol []KirbyFileProtocol
 }
 
 type KirbyFile struct {
-	path  string
-	name  string
-	kirby models.Kirby
-	md5   string
+	path     string
+	fileName string
+	code     string
+	protocol KirbyFileProtocol
+	kirby    models.Kirby
+	md5      string
+}
+
+type KirbyFileProtocol string
+
+const (
+	JsonProtocol KirbyFileProtocol = ".json"
+	KblProtocol  KirbyFileProtocol = ".kbl"
+)
+
+func NewFileSystemSentinel(path string) FileSystemSentinel {
+	if path == "" {
+		panic("path is empty, can't init file system sentinel")
+	}
+	sentinel := FileSystemSentinel{
+		path:               path,
+		allKirbyFile:       make(map[string]KirbyFile),
+		acceptFileProtocol: []KirbyFileProtocol{JsonProtocol, KblProtocol},
+	}
+	sentinel.initKirbyFile()
+
+	return sentinel
 }
 
 func (f FileSystemSentinel) Watch() (kch chan models.KirbyModel, ech chan error) {
@@ -91,10 +110,48 @@ func (f FileSystemSentinel) Watch() (kch chan models.KirbyModel, ech chan error)
 	return
 }
 
+func (f FileSystemSentinel) initKirbyFile() {
+	filepath.Walk(f.path, func(path string, info fs.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		if !f.inAcceptFileProtocol(path) {
+			return nil
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		md5, err := utils.FileMD5F(file)
+		if err != nil {
+			return err
+		}
+		ext := filepath.Ext(path)
+
+		// 获取path除了 ext 之外的文件名
+		code := strings.TrimSuffix(info.Name(), ext)
+
+		kf := KirbyFile{
+			path:     path,
+			fileName: info.Name(),
+			code:     code,
+			protocol: KirbyFileProtocol(ext),
+			md5:      md5,
+			kirby: models.Kirby{
+				Info: models.Info{
+					Code: code,
+				},
+			},
+		}
+		f.allKirbyFile[code] = kf
+		return nil
+	})
+}
+
 func (f FileSystemSentinel) inAcceptFileProtocol(path string) bool {
 	ext := filepath.Ext(path)
 	for _, v := range f.acceptFileProtocol {
-		if v == ext {
+		if v == KirbyFileProtocol(ext) {
 			return true
 		}
 	}
