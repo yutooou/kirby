@@ -6,6 +6,7 @@ import (
 	"github.com/yutooou/kirby/models"
 	"github.com/yutooou/kirby/utils"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +15,10 @@ import (
 
 type FileSystemSentinel struct {
 	path               string
-	allKirbyFile       map[string]KirbyFile
+	allKirbyFile       map[string]*KirbyFile
 	acceptFileProtocol []KirbyFileProtocol
+	kch                chan models.KirbyModel
+	ech                chan error
 }
 
 type KirbyFile struct {
@@ -40,33 +43,62 @@ func NewFileSystemSentinel(path string) FileSystemSentinel {
 	}
 	sentinel := FileSystemSentinel{
 		path:               path,
-		allKirbyFile:       make(map[string]KirbyFile),
+		allKirbyFile:       make(map[string]*KirbyFile),
 		acceptFileProtocol: []KirbyFileProtocol{JsonProtocol, KblProtocol},
+		kch:                make(chan models.KirbyModel),
+		ech:                make(chan error, 1),
 	}
-	sentinel.initKirbyFile()
+	sentinel.initAllKirbyFile()
 
 	return sentinel
 }
 
-func (f FileSystemSentinel) Watch() (kch chan models.KirbyModel, ech chan error) {
-	kch = make(chan models.KirbyModel)
-	ech = make(chan error)
+func NewKirbyFile(path string) (*KirbyFile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	md5, err := utils.FileMD5F(file)
+	if err != nil {
+		return nil, err
+	}
+	ext := filepath.Ext(path)
+	fileName := filepath.Base(path)
+
+	// 获取path除了 ext 之外的文件名
+	code := strings.TrimSuffix(fileName, ext)
+
+	kf := &KirbyFile{
+		path:     path,
+		fileName: fileName,
+		code:     code,
+		protocol: KirbyFileProtocol(ext),
+		md5:      md5,
+		kirby: models.Kirby{
+			Info: models.Info{
+				Code: code,
+			},
+		},
+	}
+	return kf, nil
+}
+
+func (f FileSystemSentinel) Watch() (chan models.KirbyModel, chan error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		ech <- fmt.Errorf("watch file system error[init]. err: %v", err)
-		return
+		f.ech <- fmt.Errorf("watch file system error[init]. err: %v", err)
+		return f.kch, f.ech
 	}
 	defer watcher.Close()
 	err = watcher.Add(f.path)
 	if err != nil {
-		ech <- fmt.Errorf("watch file system error[watch]. err: %v", err)
-		return
+		f.ech <- fmt.Errorf("watch file system error[watch]. err: %v", err)
+		return f.kch, f.ech
 	}
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		var err error
 		for {
 			select {
 			case event, ok := <-watcher.Events:
@@ -79,19 +111,19 @@ func (f FileSystemSentinel) Watch() (kch chan models.KirbyModel, ech chan error)
 				}
 				switch event.Op {
 				case fsnotify.Create | fsnotify.Write:
-					err = f.modify(event.Name)
-					if err != nil {
-						ech <- fmt.Errorf("watch file system error[modify]. err: %v", err)
+					if ok, err := f.modify(event.Name); ok {
+						f.kch <- f.kirbyModel()
+					} else if err != nil {
+						f.ech <- fmt.Errorf("watch file system error[modify]. err: %v", err)
 						continue
 					}
-					kch <- f.kirbyModel()
 				case fsnotify.Remove:
-					err = f.delete(event.Name)
-					if err != nil {
-						ech <- fmt.Errorf("watch file system error[delete]. err: %v", err)
+					if ok, err := f.delete(event.Name); ok {
+						f.kch <- f.kirbyModel()
+					} else if err != nil {
+						f.ech <- fmt.Errorf("watch file system error[delete]. err: %v", err)
 						continue
 					}
-					kch <- f.kirbyModel()
 				default:
 					continue
 				}
@@ -100,17 +132,17 @@ func (f FileSystemSentinel) Watch() (kch chan models.KirbyModel, ech chan error)
 				if !ok {
 					goto exit
 				}
-				ech <- fmt.Errorf("watch file system error[file]. err: %v", err)
+				f.ech <- fmt.Errorf("watch file system error[file]. err: %v", err)
 			}
 		}
 	exit:
 		wg.Done()
 	}()
 	wg.Wait()
-	return
+	return f.kch, f.ech
 }
 
-func (f FileSystemSentinel) initKirbyFile() {
+func (f FileSystemSentinel) initAllKirbyFile() {
 	filepath.Walk(f.path, func(path string, info fs.FileInfo, err error) error {
 		if info.IsDir() {
 			return nil
@@ -118,32 +150,11 @@ func (f FileSystemSentinel) initKirbyFile() {
 		if !f.inAcceptFileProtocol(path) {
 			return nil
 		}
-		file, err := os.Open(path)
+		kf, err := NewKirbyFile(path)
 		if err != nil {
 			return err
 		}
-		md5, err := utils.FileMD5F(file)
-		if err != nil {
-			return err
-		}
-		ext := filepath.Ext(path)
-
-		// 获取path除了 ext 之外的文件名
-		code := strings.TrimSuffix(info.Name(), ext)
-
-		kf := KirbyFile{
-			path:     path,
-			fileName: info.Name(),
-			code:     code,
-			protocol: KirbyFileProtocol(ext),
-			md5:      md5,
-			kirby: models.Kirby{
-				Info: models.Info{
-					Code: code,
-				},
-			},
-		}
-		f.allKirbyFile[code] = kf
+		f.allKirbyFile[kf.code] = kf
 		return nil
 	})
 }
@@ -166,12 +177,26 @@ func (f FileSystemSentinel) kirbyModel() models.KirbyModel {
 	return ret
 }
 
-func (f FileSystemSentinel) modify(path string) error {
-	// todo
-	panic("todo")
+func (f FileSystemSentinel) modify(path string) (ok bool, err error) {
+	kf, err := NewKirbyFile(path)
+	if err != nil {
+		return false, fmt.Errorf("modify file err: %v", err)
+	}
+	if f.allKirbyFile[kf.code] != nil && f.allKirbyFile[kf.code].md5 == kf.md5 {
+		log.Println("file not change. code: " + kf.code)
+		return false, nil
+	}
+	f.allKirbyFile[kf.code] = kf
+	return true, nil
 }
 
-func (f FileSystemSentinel) delete(path string) error {
-	// todo
-	panic("todo")
+func (f FileSystemSentinel) delete(path string) (ok bool, err error) {
+	ext := filepath.Ext(path)
+	fileName := filepath.Base(path)
+	code := strings.TrimSuffix(fileName, ext)
+	if _, ok := f.allKirbyFile[code]; !ok {
+		return false, nil
+	}
+	delete(f.allKirbyFile, code)
+	return true, nil
 }
